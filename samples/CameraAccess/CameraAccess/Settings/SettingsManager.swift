@@ -11,6 +11,9 @@ final class SettingsManager {
     case openClawPort
     case openClawHookToken
     case openClawGatewayToken
+    case openClawSetupCode
+    case openClawDeviceId
+    case openClawDeviceToken
     case geminiSystemPrompt
     case webrtcSignalingURL
     case speakerOutputEnabled
@@ -57,6 +60,34 @@ final class SettingsManager {
     set { defaults.set(newValue, forKey: Key.openClawGatewayToken.rawValue) }
   }
 
+  var openClawSetupCode: String {
+    get { defaults.string(forKey: Key.openClawSetupCode.rawValue) ?? "" }
+    set { defaults.set(newValue, forKey: Key.openClawSetupCode.rawValue) }
+  }
+
+  /// Stable device UUID — generated once, persisted forever
+  var openClawDeviceId: String {
+    get {
+      if let stored = defaults.string(forKey: Key.openClawDeviceId.rawValue), !stored.isEmpty {
+        return stored
+      }
+      let newId = UUID().uuidString.lowercased()
+      defaults.set(newId, forKey: Key.openClawDeviceId.rawValue)
+      return newId
+    }
+    set { defaults.set(newValue, forKey: Key.openClawDeviceId.rawValue) }
+  }
+
+  /// Token issued by gateway after successful pairing
+  var openClawDeviceToken: String {
+    get { defaults.string(forKey: Key.openClawDeviceToken.rawValue) ?? "" }
+    set { defaults.set(newValue, forKey: Key.openClawDeviceToken.rawValue) }
+  }
+
+  var isPaired: Bool {
+    !openClawDeviceToken.isEmpty
+  }
+
   // MARK: - WebRTC
 
   var webrtcSignalingURL: String {
@@ -89,7 +120,8 @@ final class SettingsManager {
 
   func resetAll() {
     for key in [Key.geminiAPIKey, .geminiSystemPrompt, .openClawHost, .openClawPort,
-                .openClawHookToken, .openClawGatewayToken, .webrtcSignalingURL,
+                .openClawHookToken, .openClawGatewayToken, .openClawSetupCode,
+                .openClawDeviceId, .openClawDeviceToken, .webrtcSignalingURL,
                 .speakerOutputEnabled, .videoStreamingEnabled,
                 .proactiveNotificationsEnabled] {
       defaults.removeObject(forKey: key.rawValue)

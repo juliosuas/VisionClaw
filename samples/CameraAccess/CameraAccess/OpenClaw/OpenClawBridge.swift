@@ -45,6 +45,7 @@ class OpenClawBridge: ObservableObject {
     var request = URLRequest(url: url)
     request.httpMethod = "GET"
     request.setValue("Bearer \(GeminiConfig.openClawGatewayToken)", forHTTPHeaderField: "Authorization")
+    request.setValue("operator.read,operator.write", forHTTPHeaderField: "x-openclaw-scopes")
     request.setValue("glass", forHTTPHeaderField: "x-openclaw-message-channel")
     do {
       let (_, response) = try await pingSession.data(for: request)
@@ -89,6 +90,7 @@ class OpenClawBridge: ObservableObject {
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.setValue("Bearer \(GeminiConfig.openClawGatewayToken)", forHTTPHeaderField: "Authorization")
+    request.setValue("operator.read,operator.write", forHTTPHeaderField: "x-openclaw-scopes")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue(sessionKey, forHTTPHeaderField: "x-openclaw-session-key")
     request.setValue("glass", forHTTPHeaderField: "x-openclaw-message-channel")

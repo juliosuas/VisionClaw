@@ -9,6 +9,7 @@ struct SettingsView: View {
   @State private var openClawPort: String = ""
   @State private var openClawHookToken: String = ""
   @State private var openClawGatewayToken: String = ""
+  @State private var openClawSetupCode: String = ""
   @State private var geminiSystemPrompt: String = ""
   @State private var webrtcSignalingURL: String = ""
   @State private var speakerOutputEnabled: Bool = false
@@ -76,6 +77,29 @@ struct SettingsView: View {
               .autocapitalization(.none)
               .disableAutocorrection(true)
               .font(.system(.body, design: .monospaced))
+          }
+        }
+
+        Section(header: Text("OpenClaw Pairing"), footer: Text(settings.isPaired
+          ? "✅ Paired — Device is connected to the gateway."
+          : "Paste the setup code from your OpenClaw gateway to pair this device. Run 'npx openclaw qr' on your Mac to get it.")) {
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Setup Code")
+              .font(.caption)
+              .foregroundColor(.secondary)
+            TextField("Paste setup code here", text: $openClawSetupCode)
+              .autocapitalization(.none)
+              .disableAutocorrection(true)
+              .font(.system(.body, design: .monospaced))
+          }
+
+          if settings.isPaired {
+            HStack {
+              Image(systemName: "checkmark.circle.fill")
+                .foregroundColor(.green)
+              Text("Device paired")
+                .foregroundColor(.secondary)
+            }
           }
         }
 
@@ -149,6 +173,7 @@ struct SettingsView: View {
     openClawPort = String(settings.openClawPort)
     openClawHookToken = settings.openClawHookToken
     openClawGatewayToken = settings.openClawGatewayToken
+    openClawSetupCode = settings.openClawSetupCode
     webrtcSignalingURL = settings.webrtcSignalingURL
     speakerOutputEnabled = settings.speakerOutputEnabled
     videoStreamingEnabled = settings.videoStreamingEnabled
@@ -164,6 +189,7 @@ struct SettingsView: View {
     }
     settings.openClawHookToken = openClawHookToken.trimmingCharacters(in: .whitespacesAndNewlines)
     settings.openClawGatewayToken = openClawGatewayToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    settings.openClawSetupCode = openClawSetupCode.trimmingCharacters(in: .whitespacesAndNewlines)
     settings.webrtcSignalingURL = webrtcSignalingURL.trimmingCharacters(in: .whitespacesAndNewlines)
     settings.speakerOutputEnabled = speakerOutputEnabled
     settings.videoStreamingEnabled = videoStreamingEnabled

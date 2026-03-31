@@ -2,6 +2,15 @@ import Foundation
 
 class OpenClawEventClient {
   var onNotification: ((String) -> Void)?
+  var onPairingStatusChange: ((PairingStatus) -> Void)?
+
+  enum PairingStatus {
+    case disconnected
+    case connecting
+    case waitingApproval
+    case paired
+    case error(String)
+  }
 
   private var webSocketTask: URLSessionWebSocketTask?
   private var session: URLSession?
@@ -9,6 +18,7 @@ class OpenClawEventClient {
   private var shouldReconnect = false
   private var reconnectDelay: TimeInterval = 2
   private let maxReconnectDelay: TimeInterval = 30
+  private let settings = SettingsManager.shared
 
   func connect() {
     guard GeminiConfig.isOpenClawConfigured else {
@@ -18,6 +28,7 @@ class OpenClawEventClient {
 
     shouldReconnect = true
     reconnectDelay = 2
+    onPairingStatusChange?(.connecting)
     establishConnection()
   }
 
@@ -28,19 +39,69 @@ class OpenClawEventClient {
     webSocketTask = nil
     session?.invalidateAndCancel()
     session = nil
+    onPairingStatusChange?(.disconnected)
     NSLog("[OpenClawWS] Disconnected")
+  }
+
+  /// Parse a setup code (base64 JSON) and initiate pairing
+  func startPairing(setupCode: String) {
+    guard let decoded = parseSetupCode(setupCode) else {
+      NSLog("[OpenClawWS] Invalid setup code")
+      onPairingStatusChange?(.error("Invalid setup code"))
+      return
+    }
+
+    // Store the bootstrap token temporarily
+    settings.openClawSetupCode = setupCode
+
+    // Connect using the URL from the setup code
+    shouldReconnect = true
+    reconnectDelay = 2
+    onPairingStatusChange?(.connecting)
+    establishConnection(overrideURL: decoded.url, bootstrapToken: decoded.bootstrapToken)
   }
 
   // MARK: - Private
 
-  private func establishConnection() {
-    let host = GeminiConfig.openClawHost
-      .replacingOccurrences(of: "http://", with: "")
-      .replacingOccurrences(of: "https://", with: "")
-    let port = GeminiConfig.openClawPort
-    guard let url = URL(string: "ws://\(host):\(port)") else {
-      NSLog("[OpenClawWS] Invalid URL")
+  private struct SetupCodePayload {
+    let url: String
+    let bootstrapToken: String
+  }
+
+  private func parseSetupCode(_ code: String) -> SetupCodePayload? {
+    // Clean up whitespace/newlines
+    let cleaned = code.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let data = Data(base64Encoded: cleaned),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let url = json["url"] as? String,
+          let token = json["bootstrapToken"] as? String else {
+      return nil
+    }
+    return SetupCodePayload(url: url, bootstrapToken: token)
+  }
+
+  private func establishConnection(overrideURL: String? = nil, bootstrapToken: String? = nil) {
+    let urlString: String
+
+    if let override = overrideURL {
+      urlString = override
+    } else {
+      let host = GeminiConfig.openClawHost
+        .replacingOccurrences(of: "http://", with: "")
+        .replacingOccurrences(of: "https://", with: "")
+      let port = GeminiConfig.openClawPort
+      urlString = "ws://\(host):\(port)"
+    }
+
+    guard let url = URL(string: urlString) else {
+      NSLog("[OpenClawWS] Invalid URL: %@", urlString)
+      onPairingStatusChange?(.error("Invalid URL"))
       return
+    }
+
+    // Store bootstrap token for handshake
+    if let token = bootstrapToken {
+      pendingBootstrapToken = token
     }
 
     let config = URLSessionConfiguration.default
@@ -52,6 +113,8 @@ class OpenClawEventClient {
     NSLog("[OpenClawWS] Connecting to %@", url.absoluteString)
     startReceiving()
   }
+
+  private var pendingBootstrapToken: String?
 
   private func startReceiving() {
     webSocketTask?.receive { [weak self] result in
@@ -72,6 +135,7 @@ class OpenClawEventClient {
       case .failure(let error):
         NSLog("[OpenClawWS] Receive error: %@", error.localizedDescription)
         self.isConnected = false
+        self.onPairingStatusChange?(.disconnected)
         self.scheduleReconnect()
       }
     }
@@ -85,15 +149,43 @@ class OpenClawEventClient {
     if type == "event" {
       handleEvent(json)
     } else if type == "res" {
-      let ok = json["ok"] as? Bool ?? false
-      if ok {
-        NSLog("[OpenClawWS] Connected and authenticated")
-        isConnected = true
-        reconnectDelay = 2
+      handleResponse(json)
+    }
+  }
+
+  private func handleResponse(_ json: [String: Any]) {
+    let ok = json["ok"] as? Bool ?? false
+
+    if ok {
+      // Check if we got a device token back (pairing approved)
+      if let result = json["result"] as? [String: Any],
+         let deviceToken = result["token"] as? String, !deviceToken.isEmpty {
+        // Pairing complete — save the device token
+        settings.openClawDeviceToken = deviceToken
+        settings.openClawSetupCode = "" // Clear bootstrap code
+        pendingBootstrapToken = nil
+        NSLog("[OpenClawWS] Pairing complete! Device token saved.")
+        onPairingStatusChange?(.paired)
+      }
+
+      NSLog("[OpenClawWS] Connected and authenticated")
+      isConnected = true
+      reconnectDelay = 2
+      if settings.isPaired {
+        onPairingStatusChange?(.paired)
+      }
+    } else {
+      let error = json["error"] as? [String: Any]
+      let msg = error?["message"] as? String ?? "unknown"
+      let code = error?["code"] as? String ?? ""
+
+      NSLog("[OpenClawWS] Connect failed: %@ (code: %@)", msg, code)
+
+      if msg.contains("pairing") || msg.contains("approval") || code == "pairing_pending" {
+        onPairingStatusChange?(.waitingApproval)
+        NSLog("[OpenClawWS] Device pairing pending — waiting for approval on gateway")
       } else {
-        let error = json["error"] as? [String: Any]
-        let msg = error?["message"] as? String ?? "unknown"
-        NSLog("[OpenClawWS] Connect failed: %@", msg)
+        onPairingStatusChange?(.error(msg))
       }
     }
   }
@@ -112,12 +204,34 @@ class OpenClawEventClient {
     case "cron":
       handleCronEvent(payload)
 
+    case "device.paired":
+      // Gateway confirmed pairing
+      if let token = payload["token"] as? String, !token.isEmpty {
+        settings.openClawDeviceToken = token
+        settings.openClawSetupCode = ""
+        pendingBootstrapToken = nil
+        NSLog("[OpenClawWS] Device paired via event! Token saved.")
+        onPairingStatusChange?(.paired)
+      }
+
     default:
       break
     }
   }
 
   private func sendConnectHandshake() {
+    let deviceId = settings.openClawDeviceId
+
+    // Determine auth: use device token if paired, bootstrap token if pairing, gateway token as fallback
+    var auth: [String: Any]
+    if settings.isPaired {
+      auth = ["token": settings.openClawDeviceToken]
+    } else if let bootstrap = pendingBootstrapToken, !bootstrap.isEmpty {
+      auth = ["bootstrapToken": bootstrap]
+    } else {
+      auth = ["password": GeminiConfig.openClawGatewayToken]
+    }
+
     let connectMsg: [String: Any] = [
       "type": "req",
       "id": UUID().uuidString,
@@ -126,9 +240,9 @@ class OpenClawEventClient {
         "minProtocol": 3,
         "maxProtocol": 3,
         "client": [
-          "id": "ios-node",
-          "displayName": "VisionClaw Glass",
-          "version": "1.0",
+          "id": deviceId,
+          "displayName": "VisionClaw Glasses",
+          "version": "2.0",
           "platform": "ios",
           "mode": "node"
         ],
@@ -137,14 +251,16 @@ class OpenClawEventClient {
         "caps": ["camera", "voice"],
         "commands": [] as [String],
         "permissions": [:] as [String: Any],
-        "auth": [
-          "token": GeminiConfig.openClawGatewayToken
-        ]
+        "auth": auth
       ] as [String: Any]
     ]
 
     guard let data = try? JSONSerialization.data(withJSONObject: connectMsg),
           let string = String(data: data, encoding: .utf8) else { return }
+
+    NSLog("[OpenClawWS] Sending handshake (paired: %@, deviceId: %@)",
+          settings.isPaired ? "yes" : "no", String(deviceId.prefix(8)))
+
     webSocketTask?.send(.string(string)) { error in
       if let error {
         NSLog("[OpenClawWS] Handshake send error: %@", error.localizedDescription)
@@ -154,7 +270,6 @@ class OpenClawEventClient {
 
   private func handleHeartbeatEvent(_ payload: [String: Any]) {
     let status = payload["status"] as? String ?? ""
-    // Only notify if there's actual content (not empty/silent heartbeats)
     guard status == "sent", let preview = payload["preview"] as? String, !preview.isEmpty else {
       return
     }
