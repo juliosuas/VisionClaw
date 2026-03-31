@@ -29,7 +29,16 @@ class OpenClawEventClient {
     shouldReconnect = true
     reconnectDelay = 2
     onPairingStatusChange?(.connecting)
-    establishConnection()
+
+    // If we have a setup code and are not yet paired, use it for bootstrap
+    let setupCode = settings.openClawSetupCode
+    if !settings.isPaired && !setupCode.isEmpty, let decoded = parseSetupCode(setupCode) {
+      NSLog("[OpenClawWS] Using setup code for bootstrap pairing")
+      pendingBootstrapToken = decoded.bootstrapToken
+      establishConnection(overrideURL: nil, bootstrapToken: decoded.bootstrapToken)
+    } else {
+      establishConnection()
+    }
   }
 
   func disconnect() {
