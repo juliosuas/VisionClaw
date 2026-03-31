@@ -249,7 +249,7 @@ class OpenClawEventClient {
         "minProtocol": 3,
         "maxProtocol": 3,
         "client": [
-          "id": deviceId,
+          "id": "cli",
           "displayName": "VisionClaw Glasses",
           "version": "2.0",
           "platform": "ios",
