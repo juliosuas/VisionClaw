@@ -231,15 +231,8 @@ class OpenClawEventClient {
   private func sendConnectHandshake() {
     let deviceId = settings.openClawDeviceId
 
-    // Determine auth: use device token if paired, bootstrap token if pairing, gateway token as fallback
-    var auth: [String: Any]
-    if settings.isPaired {
-      auth = ["token": settings.openClawDeviceToken]
-    } else if let bootstrap = pendingBootstrapToken, !bootstrap.isEmpty {
-      auth = ["bootstrapToken": bootstrap]
-    } else {
-      auth = ["password": GeminiConfig.openClawGatewayToken]
-    }
+    // Always send gateway token for auth
+    let auth: [String: Any] = ["token": GeminiConfig.openClawGatewayToken]
 
     let connectMsg: [String: Any] = [
       "type": "req",
