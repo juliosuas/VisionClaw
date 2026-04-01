@@ -116,7 +116,18 @@ class OpenClawEventClient {
     let config = URLSessionConfiguration.default
     config.timeoutIntervalForRequest = 30
     session = URLSession(configuration: config)
-    webSocketTask = session?.webSocketTask(with: url)
+
+    // The gateway validates the auth token at the HTTP WebSocket upgrade level.
+    // Pass it as an Authorization: Bearer header so the upgrade is authenticated
+    // before any WebSocket message is exchanged. Without this, the gateway closes
+    // the socket immediately with "token_missing" before ever receiving the
+    // connect handshake message.
+    var request = URLRequest(url: url)
+    let gatewayToken = GeminiConfig.openClawGatewayToken
+    if !gatewayToken.isEmpty {
+      request.setValue("Bearer \(gatewayToken)", forHTTPHeaderField: "Authorization")
+    }
+    webSocketTask = session?.webSocketTask(with: request)
     webSocketTask?.resume()
 
     NSLog("[OpenClawWS] Connecting to %@", url.absoluteString)
