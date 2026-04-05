@@ -9,6 +9,7 @@ final class SettingsManager {
     case geminiAPIKey
     case openClawHost
     case openClawPort
+    case openClawRemoteURL   // e.g. Tailscale URL, used when off local network
     case openClawHookToken
     case openClawGatewayToken
     case geminiSystemPrompt
@@ -37,6 +38,13 @@ final class SettingsManager {
   var openClawHost: String {
     get { defaults.string(forKey: Key.openClawHost.rawValue) ?? Secrets.openClawHost }
     set { defaults.set(newValue, forKey: Key.openClawHost.rawValue) }
+  }
+
+  /// Optional remote URL (e.g. Tailscale) used when the local gateway is unreachable.
+  /// If set, OpenClawBridge will try this before falling back to openClawHost.
+  var openClawRemoteURL: String {
+    get { defaults.string(forKey: Key.openClawRemoteURL.rawValue) ?? "" }
+    set { defaults.set(newValue, forKey: Key.openClawRemoteURL.rawValue) }
   }
 
   var openClawPort: Int {

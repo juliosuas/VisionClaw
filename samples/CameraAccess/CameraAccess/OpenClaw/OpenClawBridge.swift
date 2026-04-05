@@ -32,31 +32,48 @@ class OpenClawBridge: ObservableObject {
     self.sessionKey = OpenClawBridge.stableSessionKey
   }
 
+  // MARK: - Endpoint resolution
+
+  /// Returns the first reachable gateway base URL, trying remote (Tailscale) before local.
+  /// - Returns: A reachable base URL string, or nil if all endpoints are unreachable.
+  private func resolveGatewayBaseURL() async -> String? {
+    var candidates: [String] = []
+
+    // 1. Remote URL (Tailscale / public) if configured
+    let remote = SettingsManager.shared.openClawRemoteURL
+    if !remote.isEmpty { candidates.append(remote) }
+
+    // 2. Local network URL
+    let local = "\(GeminiConfig.openClawHost):\(GeminiConfig.openClawPort)"
+    candidates.append(local)
+
+    for baseURL in candidates {
+      guard let url = URL(string: "\(baseURL)/health") else { continue }
+      var req = URLRequest(url: url)
+      req.httpMethod = "GET"
+      req.setValue("Bearer \(GeminiConfig.openClawGatewayToken)", forHTTPHeaderField: "Authorization")
+      if let (_, response) = try? await pingSession.data(for: req),
+         let http = response as? HTTPURLResponse,
+         (200...499).contains(http.statusCode) {
+        NSLog("[OpenClaw] Resolved gateway: %@", baseURL)
+        return baseURL
+      }
+    }
+    return nil
+  }
+
   func checkConnection() async {
     guard GeminiConfig.isOpenClawConfigured else {
       connectionState = .notConfigured
       return
     }
     connectionState = .checking
-    guard let url = URL(string: "\(GeminiConfig.openClawHost):\(GeminiConfig.openClawPort)/v1/chat/completions") else {
-      connectionState = .unreachable("Invalid URL")
-      return
-    }
-    var request = URLRequest(url: url)
-    request.httpMethod = "GET"
-    request.setValue("Bearer \(GeminiConfig.openClawGatewayToken)", forHTTPHeaderField: "Authorization")
-    request.setValue("glass", forHTTPHeaderField: "x-openclaw-message-channel")
-    do {
-      let (_, response) = try await pingSession.data(for: request)
-      if let http = response as? HTTPURLResponse, (200...499).contains(http.statusCode) {
-        connectionState = .connected
-        NSLog("[OpenClaw] Gateway reachable (HTTP %d)", http.statusCode)
-      } else {
-        connectionState = .unreachable("Unexpected response")
-      }
-    } catch {
-      connectionState = .unreachable(error.localizedDescription)
-      NSLog("[OpenClaw] Gateway unreachable: %@", error.localizedDescription)
+    if let base = await resolveGatewayBaseURL() {
+      connectionState = .connected
+      NSLog("[OpenClaw] Gateway reachable at %@", base)
+    } else {
+      connectionState = .unreachable("No reachable gateway (tried local and remote)")
+      NSLog("[OpenClaw] All gateway endpoints unreachable")
     }
   }
 
@@ -73,9 +90,10 @@ class OpenClawBridge: ObservableObject {
   ) async -> ToolResult {
     lastToolCallStatus = .executing(toolName)
 
-    guard let url = URL(string: "\(GeminiConfig.openClawHost):\(GeminiConfig.openClawPort)/v1/chat/completions") else {
-      lastToolCallStatus = .failed(toolName, "Invalid URL")
-      return .failure("Invalid gateway URL")
+    guard let baseURL = await resolveGatewayBaseURL(),
+          let url = URL(string: "\(baseURL)/v1/chat/completions") else {
+      lastToolCallStatus = .failed(toolName, "No reachable gateway")
+      return .failure("No reachable gateway (local and remote both unavailable)")
     }
 
     // Append the new user message to conversation history
