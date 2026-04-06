@@ -23,6 +23,18 @@ class ToolCallRouter {
     NSLog("[ToolCall] Received: %@ (id: %@) args: %@",
           callName, callId, String(describing: call.args))
 
+    // Fast-fail if OpenClaw is not configured
+    if !GeminiConfig.isOpenClawConfigured {
+      NSLog("[ToolCall] OpenClaw not configured, rejecting tool call %@", callId)
+      let errorResult: ToolResult = .failure(
+        "OpenClaw is not configured. Tool calls are unavailable. " +
+        "Please tell the user to set up OpenClaw in Settings to enable actions like web search, messaging, and more."
+      )
+      let response = buildToolResponse(callId: callId, name: callName, result: errorResult)
+      sendResponse(response)
+      return
+    }
+
     // Circuit breaker: stop sending tool calls after repeated failures
     if consecutiveFailures >= maxConsecutiveFailures {
       NSLog("[ToolCall] Circuit breaker open (%d consecutive failures), rejecting %@",

@@ -1,6 +1,7 @@
 package com.meta.wearable.dat.externalsampleapps.cameraaccess.openclaw
 
 import android.util.Log
+import com.meta.wearable.dat.externalsampleapps.cameraaccess.gemini.GeminiConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -27,6 +28,17 @@ class ToolCallRouter(
         val callName = call.name
 
         Log.d(TAG, "Received: $callName (id: $callId) args: ${call.args}")
+
+        // Fast-fail if OpenClaw is not configured
+        if (!GeminiConfig.isOpenClawConfigured) {
+            Log.w(TAG, "OpenClaw not configured, rejecting tool call $callId")
+            val errorResult = ToolResult.Failure(
+                "OpenClaw is not configured. Tool calls are unavailable. " +
+                "Please tell the user to set up OpenClaw in Settings to enable actions like web search, messaging, and more."
+            )
+            sendResponse(buildToolResponse(callId, callName, errorResult))
+            return
+        }
 
         // Circuit breaker: stop sending tool calls after repeated failures
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {

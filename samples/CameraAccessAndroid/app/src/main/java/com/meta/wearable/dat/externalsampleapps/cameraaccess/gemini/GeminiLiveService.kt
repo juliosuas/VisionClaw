@@ -211,6 +211,8 @@ class GeminiLiveService {
     }
 
     private fun sendSetupMessage() {
+        val isOpenClawConfigured = GeminiConfig.isOpenClawConfigured
+
         val setup = JSONObject().apply {
             put("setup", JSONObject().apply {
                 put("model", GeminiConfig.MODEL)
@@ -222,12 +224,22 @@ class GeminiLiveService {
                 })
                 put("systemInstruction", JSONObject().apply {
                     put("parts", JSONArray().put(JSONObject().apply {
-                        put("text", GeminiConfig.systemInstruction)
+                        put("text", if (isOpenClawConfigured)
+                            GeminiConfig.systemInstruction
+                        else
+                            GeminiConfig.NO_TOOLS_SYSTEM_INSTRUCTION)
                     }))
                 })
-                put("tools", JSONArray().put(JSONObject().apply {
-                    put("functionDeclarations", ToolDeclarations.allDeclarationsJSON())
-                }))
+                // Only declare tools when OpenClaw is configured — otherwise Gemini
+                // will attempt tool calls that have no backend, getting stuck in "executing"
+                if (isOpenClawConfigured) {
+                    put("tools", JSONArray().put(JSONObject().apply {
+                        put("functionDeclarations", ToolDeclarations.allDeclarationsJSON())
+                    }))
+                    Log.d(TAG, "Setup with tools (OpenClaw configured)")
+                } else {
+                    Log.d(TAG, "Setup without tools (OpenClaw not configured)")
+                }
                 put("realtimeInputConfig", JSONObject().apply {
                     put("automaticActivityDetection", JSONObject().apply {
                         put("disabled", false)

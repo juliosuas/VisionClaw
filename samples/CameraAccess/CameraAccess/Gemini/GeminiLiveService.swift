@@ -178,46 +178,53 @@ class GeminiLiveService: ObservableObject {
   }
 
   private func sendSetupMessage() {
-    let setup: [String: Any] = [
-      "setup": [
-        "model": GeminiConfig.model,
-        "generationConfig": [
-          "responseModalities": ["AUDIO"],
-          "thinkingConfig": [
-            "thinkingBudget": 0
-          ]
+    var setupContent: [String: Any] = [
+      "model": GeminiConfig.model,
+      "generationConfig": [
+        "responseModalities": ["AUDIO"],
+        "thinkingConfig": [
+          "thinkingBudget": 0
+        ]
+      ],
+      "systemInstruction": [
+        "parts": [
+          ["text": GeminiConfig.isOpenClawConfigured
+            ? GeminiConfig.systemInstruction
+            : GeminiConfig.noToolsSystemInstruction]
+        ]
+      ],
+      "realtimeInputConfig": [
+        "automaticActivityDetection": [
+          "disabled": false,
+          "startOfSpeechSensitivity": "START_SENSITIVITY_HIGH",
+          "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
+          "silenceDurationMs": 500,
+          "prefixPaddingMs": 40
         ],
-        "systemInstruction": [
-          "parts": [
-            ["text": GeminiConfig.systemInstruction]
-          ]
-        ],
-        "tools": [
-          [
-            "functionDeclarations": ToolDeclarations.allDeclarations()
-          ]
-        ],
-        "realtimeInputConfig": [
-          "automaticActivityDetection": [
-            "disabled": false,
-            "startOfSpeechSensitivity": "START_SENSITIVITY_HIGH",
-            "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
-            "silenceDurationMs": 500,
-            "prefixPaddingMs": 40
-          ],
-          "activityHandling": "START_OF_ACTIVITY_INTERRUPTS",
-          "turnCoverage": "TURN_INCLUDES_ALL_INPUT"
-        ],
-        "contextWindowCompression": [
-          "slidingWindow": [
-            "targetTokens": 80000
-          ]
-        ],
-        "inputAudioTranscription": [:] as [String: Any],
-        "outputAudioTranscription": [:] as [String: Any]
-      ]
+        "activityHandling": "START_OF_ACTIVITY_INTERRUPTS",
+        "turnCoverage": "TURN_INCLUDES_ALL_INPUT"
+      ],
+      "contextWindowCompression": [
+        "slidingWindow": [
+          "targetTokens": 80000
+        ]
+      ],
+      "inputAudioTranscription": [:] as [String: Any],
+      "outputAudioTranscription": [:] as [String: Any]
     ]
-    sendJSON(setup)
+
+    // Only declare tools when OpenClaw is configured — otherwise Gemini
+    // will attempt tool calls that have no backend, getting stuck in "executing"
+    if GeminiConfig.isOpenClawConfigured {
+      setupContent["tools"] = [
+        ["functionDeclarations": ToolDeclarations.allDeclarations()]
+      ]
+      NSLog("[Gemini] Setup with tools (OpenClaw configured)")
+    } else {
+      NSLog("[Gemini] Setup without tools (OpenClaw not configured)")
+    }
+
+    sendJSON(["setup": setupContent])
   }
 
   private func sendJSON(_ json: [String: Any]) {

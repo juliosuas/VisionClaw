@@ -42,6 +42,14 @@ enum GeminiConfig {
     For messages, confirm recipient and content before delegating unless clearly urgent.
     """
 
+  static let noToolsSystemInstruction = """
+    You are an AI assistant for someone wearing Meta Ray-Ban smart glasses. You can see through their camera and have a voice conversation. Keep responses concise and natural.
+
+    You do NOT have any tools. You cannot send messages, search the web, manage lists, set reminders, or take any actions. You are a voice + vision assistant only.
+
+    If the user asks you to do something that requires an action (send a message, search, add to a list, etc.), let them know that OpenClaw is not connected and they need to set it up in Settings to enable those features.
+    """
+
   // User-configurable values (Settings screen overrides, falling back to Secrets.swift)
   static var apiKey: String { SettingsManager.shared.geminiAPIKey }
   static var openClawHost: String { SettingsManager.shared.openClawHost }
