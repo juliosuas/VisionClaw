@@ -25,12 +25,15 @@ class AudioManager {
   private var foregroundObserver: NSObjectProtocol?
 
   init() {
-    self.outputFormat = AVAudioFormat(
+    guard let format = AVAudioFormat(
       commonFormat: .pcmFormatInt16,
       sampleRate: GeminiConfig.outputAudioSampleRate,
       channels: GeminiConfig.audioChannels,
       interleaved: true
-    )!
+    ) else {
+      fatalError("[AudioManager] Failed to create output audio format — check audio configuration")
+    }
+    self.outputFormat = format
   }
 
   func setupAudioSession(useIPhoneMode: Bool = false) throws {

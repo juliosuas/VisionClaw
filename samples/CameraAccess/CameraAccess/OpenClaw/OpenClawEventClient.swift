@@ -34,13 +34,19 @@ class OpenClawEventClient {
   // MARK: - Private
 
   private func establishConnection() {
-    let host = GeminiConfig.openClawHost
+    let rawHost = GeminiConfig.openClawHost
+    let isSecure = rawHost.hasPrefix("https://")
+    let host = rawHost
       .replacingOccurrences(of: "http://", with: "")
       .replacingOccurrences(of: "https://", with: "")
     let port = GeminiConfig.openClawPort
-    guard let url = URL(string: "ws://\(host):\(port)") else {
+    let scheme = isSecure ? "wss" : "ws"
+    guard let url = URL(string: "\(scheme)://\(host):\(port)") else {
       NSLog("[OpenClawWS] Invalid URL")
       return
+    }
+    if !isSecure {
+      NSLog("[OpenClawWS] WARNING: Using insecure ws:// connection. Use https:// host for production.")
     }
 
     let config = URLSessionConfiguration.default
