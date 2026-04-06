@@ -51,28 +51,69 @@ class OpenClawBridge {
         }
         _connectionState.value = OpenClawConnectionState.Checking
 
-        val url = "${GeminiConfig.openClawHost}:${GeminiConfig.openClawPort}/v1/chat/completions"
+        // Step 1: Check gateway health endpoint
+        val healthUrl = "${GeminiConfig.openClawHost}:${GeminiConfig.openClawPort}/health"
         try {
-            val request = Request.Builder()
-                .url(url)
+            val healthRequest = Request.Builder()
+                .url(healthUrl)
+                .get()
+                .build()
+
+            val healthResponse = pingClient.newCall(healthRequest).execute()
+            val healthCode = healthResponse.code
+            healthResponse.close()
+
+            if (healthCode !in 200..299) {
+                _connectionState.value = OpenClawConnectionState.Unreachable("Gateway not running (HTTP $healthCode)")
+                Log.d(TAG, "Gateway health check failed: HTTP $healthCode")
+                return@withContext
+            }
+        } catch (e: Exception) {
+            _connectionState.value = OpenClawConnectionState.Unreachable("Gateway unreachable: ${e.message}")
+            Log.d(TAG, "Gateway unreachable: ${e.message}")
+            return@withContext
+        }
+
+        // Step 2: Verify chat completions endpoint is enabled
+        val chatUrl = "${GeminiConfig.openClawHost}:${GeminiConfig.openClawPort}/v1/chat/completions"
+        try {
+            val chatRequest = Request.Builder()
+                .url(chatUrl)
                 .get()
                 .addHeader("Authorization", "Bearer ${GeminiConfig.openClawGatewayToken}")
                 .addHeader("x-openclaw-message-channel", "glass")
                 .build()
 
-            val response = pingClient.newCall(request).execute()
-            val code = response.code
-            response.close()
+            val chatResponse = pingClient.newCall(chatRequest).execute()
+            val code = chatResponse.code
+            chatResponse.close()
 
-            if (code in 200..499) {
-                _connectionState.value = OpenClawConnectionState.Connected
-                Log.d(TAG, "Gateway reachable (HTTP $code)")
-            } else {
-                _connectionState.value = OpenClawConnectionState.Unreachable("Unexpected response")
+            when (code) {
+                in 200..299, 405 -> {
+                    // 405 Method Not Allowed on GET is expected — endpoint exists and is enabled
+                    _connectionState.value = OpenClawConnectionState.Connected
+                    Log.d(TAG, "Gateway connected (HTTP $code)")
+                }
+                401, 403 -> {
+                    _connectionState.value = OpenClawConnectionState.Unreachable(
+                        "Authentication failed (HTTP $code) — check your gateway token"
+                    )
+                    Log.d(TAG, "Auth failed: HTTP $code")
+                }
+                404 -> {
+                    _connectionState.value = OpenClawConnectionState.Unreachable(
+                        "chatCompletions endpoint disabled — enable it in openclaw.json"
+                    )
+                    Log.d(TAG, "Endpoint disabled: HTTP 404. Set gateway.http.endpoints.chatCompletions.enabled = true in ~/.openclaw/openclaw.json")
+                }
+                else -> {
+                    _connectionState.value = OpenClawConnectionState.Unreachable("Unexpected response (HTTP $code)")
+                    Log.d(TAG, "Unexpected status: HTTP $code")
+                }
             }
         } catch (e: Exception) {
             _connectionState.value = OpenClawConnectionState.Unreachable(e.message ?: "Unknown error")
-            Log.d(TAG, "Gateway unreachable: ${e.message}")
+            Log.d(TAG, "Chat endpoint check failed: ${e.message}")
         }
     }
 
@@ -123,6 +164,7 @@ class OpenClawBridge {
                 .addHeader("Content-Type", "application/json")
                 .addHeader("x-openclaw-session-key", sessionKey)
                 .addHeader("x-openclaw-message-channel", "glass")
+                .addHeader("x-openclaw-scopes", "operator.write")
                 .build()
 
             val response = client.newCall(request).execute()

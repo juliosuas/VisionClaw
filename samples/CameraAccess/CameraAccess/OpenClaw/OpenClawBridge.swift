@@ -38,25 +38,58 @@ class OpenClawBridge: ObservableObject {
       return
     }
     connectionState = .checking
-    guard let url = URL(string: "\(GeminiConfig.openClawHost):\(GeminiConfig.openClawPort)/v1/chat/completions") else {
+
+    // Step 1: Check gateway health endpoint
+    guard let healthURL = URL(string: "\(GeminiConfig.openClawHost):\(GeminiConfig.openClawPort)/health") else {
       connectionState = .unreachable("Invalid URL")
       return
     }
-    var request = URLRequest(url: url)
-    request.httpMethod = "GET"
-    request.setValue("Bearer \(GeminiConfig.openClawGatewayToken)", forHTTPHeaderField: "Authorization")
-    request.setValue("glass", forHTTPHeaderField: "x-openclaw-message-channel")
+    var healthRequest = URLRequest(url: healthURL)
+    healthRequest.httpMethod = "GET"
     do {
-      let (_, response) = try await pingSession.data(for: request)
-      if let http = response as? HTTPURLResponse, (200...499).contains(http.statusCode) {
-        connectionState = .connected
-        NSLog("[OpenClaw] Gateway reachable (HTTP %d)", http.statusCode)
-      } else {
-        connectionState = .unreachable("Unexpected response")
+      let (_, healthResponse) = try await pingSession.data(for: healthRequest)
+      if let http = healthResponse as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+        connectionState = .unreachable("Gateway not running (HTTP \(http.statusCode))")
+        NSLog("[OpenClaw] Gateway health check failed: HTTP %d", http.statusCode)
+        return
+      }
+    } catch {
+      connectionState = .unreachable("Gateway unreachable: \(error.localizedDescription)")
+      NSLog("[OpenClaw] Gateway unreachable: %@", error.localizedDescription)
+      return
+    }
+
+    // Step 2: Verify chat completions endpoint is enabled
+    guard let chatURL = URL(string: "\(GeminiConfig.openClawHost):\(GeminiConfig.openClawPort)/v1/chat/completions") else {
+      connectionState = .unreachable("Invalid URL")
+      return
+    }
+    var chatRequest = URLRequest(url: chatURL)
+    chatRequest.httpMethod = "GET"
+    chatRequest.setValue("Bearer \(GeminiConfig.openClawGatewayToken)", forHTTPHeaderField: "Authorization")
+    chatRequest.setValue("glass", forHTTPHeaderField: "x-openclaw-message-channel")
+    do {
+      let (_, chatResponse) = try await pingSession.data(for: chatRequest)
+      if let http = chatResponse as? HTTPURLResponse {
+        switch http.statusCode {
+        case 200...299, 405:
+          // 405 Method Not Allowed on GET is expected — endpoint exists and is enabled
+          connectionState = .connected
+          NSLog("[OpenClaw] Gateway connected (HTTP %d)", http.statusCode)
+        case 401, 403:
+          connectionState = .unreachable("Authentication failed (HTTP \(http.statusCode)) — check your gateway token")
+          NSLog("[OpenClaw] Auth failed: HTTP %d", http.statusCode)
+        case 404:
+          connectionState = .unreachable("chatCompletions endpoint disabled — enable it in openclaw.json")
+          NSLog("[OpenClaw] Endpoint disabled: HTTP 404. Set gateway.http.endpoints.chatCompletions.enabled = true in ~/.openclaw/openclaw.json")
+        default:
+          connectionState = .unreachable("Unexpected response (HTTP \(http.statusCode))")
+          NSLog("[OpenClaw] Unexpected status: HTTP %d", http.statusCode)
+        }
       }
     } catch {
       connectionState = .unreachable(error.localizedDescription)
-      NSLog("[OpenClaw] Gateway unreachable: %@", error.localizedDescription)
+      NSLog("[OpenClaw] Chat endpoint check failed: %@", error.localizedDescription)
     }
   }
 
@@ -92,6 +125,7 @@ class OpenClawBridge: ObservableObject {
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue(sessionKey, forHTTPHeaderField: "x-openclaw-session-key")
     request.setValue("glass", forHTTPHeaderField: "x-openclaw-message-channel")
+    request.setValue("operator.write", forHTTPHeaderField: "x-openclaw-scopes")
 
     let body: [String: Any] = [
       "model": "openclaw",
