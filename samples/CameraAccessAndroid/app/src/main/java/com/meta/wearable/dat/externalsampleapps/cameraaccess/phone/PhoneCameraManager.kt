@@ -92,13 +92,18 @@ class PhoneCameraManager(private val context: Context) {
             )
             val jpegBytes = out.toByteArray()
             val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                ?: return null
 
             // Rotate based on image rotation
             val rotation = imageProxy.imageInfo.rotationDegrees
             if (rotation != 0) {
                 val matrix = Matrix()
                 matrix.postRotate(rotation.toFloat())
-                Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                if (rotated !== bitmap && !bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
+                rotated
             } else {
                 bitmap
             }
