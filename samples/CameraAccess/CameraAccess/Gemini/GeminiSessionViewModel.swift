@@ -123,6 +123,13 @@ class GeminiSessionViewModel: ObservableObject {
     }
 
     // Setup audio
+    let micGranted = await audioManager.requestMicrophonePermissionIfNeeded()
+    guard micGranted else {
+      errorMessage = "Microphone access denied. Enable microphone permission for VisionClaw in Settings."
+      isGeminiActive = false
+      return
+    }
+
     do {
       try audioManager.setupAudioSession(useIPhoneMode: streamingMode == .iPhone)
     } catch {

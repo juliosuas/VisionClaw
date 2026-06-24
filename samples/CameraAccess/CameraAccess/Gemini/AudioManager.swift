@@ -5,13 +5,25 @@ import UIKit
 class AudioManager {
   var onAudioCaptured: ((Data) -> Void)?
 
+  enum AudioSetupError: LocalizedError {
+    case microphonePermissionDenied
+    case invalidAudioFormat(String)
+
+    var errorDescription: String? {
+      switch self {
+      case .microphonePermissionDenied:
+        return "Microphone access denied. Enable microphone permission for VisionClaw in Settings."
+      case .invalidAudioFormat(let context):
+        return "Could not create audio format for \(context)."
+      }
+    }
+  }
+
   private let audioEngine = AVAudioEngine()
   private let playerNode = AVAudioPlayerNode()
   private var isCapturing = false
   private var wasCapturingBeforeInterruption = false
   private var useIPhoneMode = false
-
-  private let outputFormat: AVAudioFormat
 
   // Accumulate resampled PCM into ~100ms chunks before sending
   private let sendQueue = DispatchQueue(label: "audio.accumulator")
@@ -24,43 +36,103 @@ class AudioManager {
   private var mediaServicesResetObserver: NSObjectProtocol?
   private var foregroundObserver: NSObjectProtocol?
 
-  init() {
-    self.outputFormat = AVAudioFormat(
-      commonFormat: .pcmFormatInt16,
-      sampleRate: GeminiConfig.outputAudioSampleRate,
-      channels: GeminiConfig.audioChannels,
-      interleaved: true
-    )!
+  func requestMicrophonePermissionIfNeeded() async -> Bool {
+    if #available(iOS 17.0, *) {
+      switch AVAudioApplication.shared.recordPermission {
+      case .granted:
+        return true
+      case .denied:
+        return false
+      case .undetermined:
+        return await withCheckedContinuation { continuation in
+          AVAudioApplication.requestRecordPermission { granted in
+            continuation.resume(returning: granted)
+          }
+        }
+      @unknown default:
+        return false
+      }
+    } else {
+      let session = AVAudioSession.sharedInstance()
+
+      switch session.recordPermission {
+      case .granted:
+        return true
+      case .denied:
+        return false
+      case .undetermined:
+        return await withCheckedContinuation { continuation in
+          session.requestRecordPermission { granted in
+            continuation.resume(returning: granted)
+          }
+        }
+      @unknown default:
+        return false
+      }
+    }
   }
 
   func setupAudioSession(useIPhoneMode: Bool = false) throws {
     self.useIPhoneMode = useIPhoneMode
     let session = AVAudioSession.sharedInstance()
+
+    if #available(iOS 17.0, *) {
+      guard AVAudioApplication.shared.recordPermission == .granted else {
+        throw AudioSetupError.microphonePermissionDenied
+      }
+    } else {
+      guard session.recordPermission == .granted else {
+        throw AudioSetupError.microphonePermissionDenied
+      }
+    }
+
+    try? session.setActive(false, options: .notifyOthersOnDeactivation)
+
     // voiceChat: aggressive echo cancellation (mic + speaker co-located on phone)
     // videoChat: mild AEC (mic on glasses, speaker on glasses)
     // When Speaker Output is ON, speaker is on phone so always use voiceChat AEC
     let forceSpeaker = SettingsManager.shared.speakerOutputEnabled
-    if useIPhoneMode || forceSpeaker {
-      try session.setCategory(
-        .playAndRecord,
-        mode: .voiceChat,
-        options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers]
-      )
-    } else {
-      try session.setCategory(
-        .playAndRecord,
-        mode: .videoChat,
-        options: [.allowBluetoothHFP, .mixWithOthers, .defaultToSpeaker]
-      )
+
+    let preferredMode: AVAudioSession.Mode = (useIPhoneMode || forceSpeaker) ? .voiceChat : .videoChat
+    let preferredOptions: AVAudioSession.CategoryOptions = useIPhoneMode || forceSpeaker
+      ? [.defaultToSpeaker, .allowBluetoothHFP, .mixWithOthers]
+      : [.allowBluetoothHFP, .mixWithOthers]
+
+    try session.setCategory(.playAndRecord, mode: preferredMode, options: preferredOptions)
+
+    do {
+      try session.setPreferredSampleRate(GeminiConfig.inputAudioSampleRate)
+    } catch {
+      NSLog("[Audio] Preferred sample rate rejected: %@", error.localizedDescription)
     }
-    try session.setPreferredSampleRate(GeminiConfig.inputAudioSampleRate)
-    try session.setPreferredIOBufferDuration(0.064)
-    try session.setActive(true)
+
+    do {
+      try session.setPreferredIOBufferDuration(0.064)
+    } catch {
+      NSLog("[Audio] Preferred buffer duration rejected: %@", error.localizedDescription)
+    }
+
+    do {
+      try session.setActive(true)
+    } catch {
+      NSLog("[Audio] Session activation failed with preferred mode %@: %@",
+            preferredMode.rawValue, error.localizedDescription)
+
+      let fallbackOptions: AVAudioSession.CategoryOptions = forceSpeaker ? [.defaultToSpeaker] : []
+      try session.setCategory(.playAndRecord, mode: .default, options: fallbackOptions)
+      try session.setActive(true)
+      NSLog("[Audio] Session activated with fallback mode")
+    }
+
     if SettingsManager.shared.speakerOutputEnabled {
-      try session.overrideOutputAudioPort(.speaker)
-      NSLog("[Audio] Speaker output override: ON (iPhone speaker)")
+      do {
+        try session.overrideOutputAudioPort(.speaker)
+        NSLog("[Audio] Speaker output override: ON (iPhone speaker)")
+      } catch {
+        NSLog("[Audio] Speaker override failed: %@", error.localizedDescription)
+      }
     }
-    NSLog("[Audio] Session mode: %@", useIPhoneMode ? "voiceChat (iPhone)" : "videoChat (glasses)")
+    NSLog("[Audio] Session mode: %@", useIPhoneMode || forceSpeaker ? "voiceChat (iPhone)" : "videoChat (glasses)")
 
     setupInterruptionHandling()
     setupAppLifecycleObservers()
@@ -75,7 +147,10 @@ class AudioManager {
       sampleRate: GeminiConfig.outputAudioSampleRate,
       channels: GeminiConfig.audioChannels,
       interleaved: false
-    )!
+    )
+    guard let playerFormat else {
+      throw AudioSetupError.invalidAudioFormat("playback")
+    }
     audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: playerFormat)
 
     let inputNode = audioEngine.inputNode
@@ -102,7 +177,10 @@ class AudioManager {
         sampleRate: GeminiConfig.inputAudioSampleRate,
         channels: GeminiConfig.audioChannels,
         interleaved: false
-      )!
+      )
+      guard let resampleFormat else {
+        throw AudioSetupError.invalidAudioFormat("capture resampling")
+      }
       converter = AVAudioConverter(from: inputNativeFormat, to: resampleFormat)
     }
 
@@ -119,7 +197,11 @@ class AudioManager {
           sampleRate: GeminiConfig.inputAudioSampleRate,
           channels: GeminiConfig.audioChannels,
           interleaved: false
-        )!
+        )
+        guard let resampleFormat else {
+          if tapCount <= 3 { NSLog("[Audio] Invalid resample format for tap #%d", tapCount) }
+          return
+        }
         guard let resampled = self.convertBuffer(buffer, using: converter, targetFormat: resampleFormat) else {
           if tapCount <= 3 { NSLog("[Audio] Resample failed for tap #%d", tapCount) }
           return
@@ -157,7 +239,11 @@ class AudioManager {
       sampleRate: GeminiConfig.outputAudioSampleRate,
       channels: GeminiConfig.audioChannels,
       interleaved: false
-    )!
+    )
+    guard let playerFormat else {
+      NSLog("[Audio] Invalid playback format")
+      return
+    }
 
     let frameCount = UInt32(data.count) / (GeminiConfig.audioBitsPerSample / 8 * GeminiConfig.audioChannels)
     guard frameCount > 0 else { return }

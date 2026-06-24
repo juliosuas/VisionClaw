@@ -4,6 +4,12 @@ class OpenClawEventClient {
   var onNotification: ((String) -> Void)?
   var onPairingStatusChange: ((PairingStatus) -> Void)?
 
+  private enum HandshakeAuthMode: String {
+    case bootstrap
+    case device
+    case gatewayFallback = "gateway_fallback"
+  }
+
   enum PairingStatus {
     case disconnected
     case connecting
@@ -35,7 +41,7 @@ class OpenClawEventClient {
     if !settings.isPaired && !setupCode.isEmpty, let decoded = parseSetupCode(setupCode) {
       NSLog("[OpenClawWS] Using setup code for bootstrap pairing")
       pendingBootstrapToken = decoded.bootstrapToken
-      establishConnection(overrideURL: nil, bootstrapToken: decoded.bootstrapToken)
+      establishConnection(overrideURL: decoded.url, bootstrapToken: decoded.bootstrapToken)
     } else {
       establishConnection()
     }
@@ -95,11 +101,14 @@ class OpenClawEventClient {
     if let override = overrideURL {
       urlString = override
     } else {
-      let host = GeminiConfig.openClawHost
+      let hostSetting = GeminiConfig.openClawHost.trimmingCharacters(in: .whitespacesAndNewlines)
+      let usesTLS = hostSetting.lowercased().hasPrefix("https://")
+      let socketScheme = usesTLS ? "wss" : "ws"
+      let host = hostSetting
         .replacingOccurrences(of: "http://", with: "")
         .replacingOccurrences(of: "https://", with: "")
       let port = GeminiConfig.openClawPort
-      urlString = "ws://\(host):\(port)"
+      urlString = "\(socketScheme)://\(host):\(port)"
     }
 
     guard let url = URL(string: urlString) else {
@@ -241,9 +250,8 @@ class OpenClawEventClient {
 
   private func sendConnectHandshake() {
     let deviceId = settings.openClawDeviceId
-
-    // Always send gateway token for auth
-    let auth: [String: Any] = ["token": GeminiConfig.openClawGatewayToken]
+    let (authToken, authMode) = handshakeToken()
+    let auth: [String: Any] = ["token": authToken]
 
     let connectMsg: [String: Any] = [
       "type": "req",
@@ -271,8 +279,8 @@ class OpenClawEventClient {
     guard let data = try? JSONSerialization.data(withJSONObject: connectMsg),
           let string = String(data: data, encoding: .utf8) else { return }
 
-    NSLog("[OpenClawWS] Sending handshake (paired: %@, deviceId: %@)",
-          settings.isPaired ? "yes" : "no", String(deviceId.prefix(8)))
+    NSLog("[OpenClawWS] Sending handshake (mode: %@, paired: %@, deviceId: %@)",
+          authMode.rawValue, settings.isPaired ? "yes" : "no", String(deviceId.prefix(8)))
 
     webSocketTask?.send(.string(string)) { error in
       if let error {
@@ -315,5 +323,18 @@ class OpenClawEventClient {
       self.reconnectDelay = min(self.reconnectDelay * 2, self.maxReconnectDelay)
       self.establishConnection()
     }
+  }
+
+  private func handshakeToken() -> (String, HandshakeAuthMode) {
+    if let pendingBootstrapToken, !pendingBootstrapToken.isEmpty {
+      return (pendingBootstrapToken, .bootstrap)
+    }
+
+    let deviceToken = settings.openClawDeviceToken
+    if !deviceToken.isEmpty {
+      return (deviceToken, .device)
+    }
+
+    return (GeminiConfig.openClawGatewayToken, .gatewayFallback)
   }
 }
