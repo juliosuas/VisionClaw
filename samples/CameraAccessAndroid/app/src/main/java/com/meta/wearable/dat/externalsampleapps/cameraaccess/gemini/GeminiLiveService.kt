@@ -56,7 +56,7 @@ class GeminiLiveService {
     private var responseLatencyLogged = false
 
     private var webSocket: WebSocket? = null
-    private val sendExecutor = Executors.newSingleThreadExecutor()
+    private var sendExecutor = Executors.newSingleThreadExecutor()
     private var connectCallback: ((Boolean) -> Unit)? = null
     private var timeoutTimer: Timer? = null
 
@@ -66,6 +66,10 @@ class GeminiLiveService {
         .build()
 
     fun connect(callback: (Boolean) -> Unit) {
+        if (sendExecutor.isShutdown || sendExecutor.isTerminated) {
+            sendExecutor = Executors.newSingleThreadExecutor()
+        }
+
         val url = GeminiConfig.websocketURL()
         if (url == null) {
             _connectionState.value = GeminiConnectionState.Error("No API key configured")
@@ -116,7 +120,8 @@ class GeminiLiveService {
             }
         })
 
-        // Timeout after 15 seconds (use Timer so we don't block sendExecutor)
+        // Cancel any previous timer before creating a new one.
+        timeoutTimer?.cancel()
         timeoutTimer = Timer().apply {
             schedule(object : TimerTask() {
                 override fun run() {
@@ -134,6 +139,7 @@ class GeminiLiveService {
     fun disconnect() {
         timeoutTimer?.cancel()
         timeoutTimer = null
+        sendExecutor.shutdownNow()
         webSocket?.close(1000, null)
         webSocket = null
         onToolCall = null
